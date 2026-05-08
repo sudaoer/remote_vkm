@@ -50,6 +50,18 @@ Install the host environment and run the client from this repository on Windows:
 pixi run host --host <board-ip-or-hostname> --port 5533
 ```
 
+If the receiver has already been deployed to `sudoer@bpi-f3`, start both sides with:
+
+```powershell
+.\scripts\start-remote-vkm.ps1
+```
+
+To start or check only the board receiver without opening the local capture window:
+
+```powershell
+.\scripts\start-remote-vkm.ps1 -ReceiverOnly
+```
+
 Useful flags:
 
 ```powershell
@@ -67,6 +79,7 @@ The default host mode opens a window:
 - Click inside the window to capture keyboard and mouse.
 - The first click only enters capture mode; it is not forwarded to the board.
 - While captured, the cursor is hidden, locked to the window, recentered after movement, and sent as relative mouse motion.
+- Keyboard capture uses a low-level hook while captured, suppresses local key delivery, and maps Windows virtual-key codes before text characters, so active IMEs do not transform the forwarded key events.
 - Press `Ctrl+Alt` to release capture, like a virtual machine console.
 - Close the window or stop the console process to exit.
 

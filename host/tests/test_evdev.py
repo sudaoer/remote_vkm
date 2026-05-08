@@ -14,6 +14,18 @@ def test_shifted_symbol_maps_to_base_key() -> None:
     assert key_to_evdev_code(KeyCode.from_char("?")) == 53
 
 
+def test_windows_vk_maps_before_char_for_ime_resilience() -> None:
+    key = KeyCode.from_vk(0x43)
+
+    assert key_to_evdev_code(key) == 46
+
+
+def test_windows_oem_vk_maps_to_symbol_key() -> None:
+    key = KeyCode.from_vk(0xBA)
+
+    assert key_to_evdev_code(key) == 39
+
+
 def test_special_key_maps_to_linux_evdev_code() -> None:
     assert key_to_evdev_code(Key.enter) == 28
     assert key_to_evdev_code(Key.esc) == 1

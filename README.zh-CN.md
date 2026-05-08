@@ -50,6 +50,18 @@ sudo board/build/remote-vkm-receiver --listen 0.0.0.0 --port 5533
 pixi run host --host <开发板-IP-或主机名> --port 5533
 ```
 
+如果接收端已经部署到 `sudoer@bpi-f3`，可以用一个脚本同时启动开发板监听服务和本地主机捕获端：
+
+```powershell
+.\scripts\start-remote-vkm.ps1
+```
+
+如果只想启动或检查开发板接收端，不打开本地捕获窗口：
+
+```powershell
+.\scripts\start-remote-vkm.ps1 -ReceiverOnly
+```
+
 常用参数：
 
 ```powershell
@@ -67,6 +79,7 @@ pixi run test
 - 点击窗口内部即可捕获键盘和鼠标。
 - 第一次点击只进入捕获模式，不会发送到开发板。
 - 捕获期间鼠标会被隐藏并锁定在窗口内，移动会被回中并作为相对移动发送。
+- 捕获期间键盘通过低层钩子读取，抑制本机按键继续进入输入法/应用，并优先按 Windows virtual-key code 映射，因此中文输入法不会改写转发到开发板的按键事件。
 - 按 `Ctrl+Alt` 释放捕获，行为类似虚拟机控制台。
 - 关闭窗口或停止控制台进程即可退出。
 

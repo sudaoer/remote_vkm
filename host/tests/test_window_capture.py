@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from pynput.keyboard import Key, KeyCode
+
 from remote_vkm_host.protocol import ACTION_PRESS, ACTION_RELEASE, TYPE_KEY
 from remote_vkm_host.window_capture import WindowForwarder
 
@@ -36,10 +38,10 @@ def test_ctrl_shortcut_flushes_modifier_in_window_mode() -> None:
     forwarder = WindowForwarder(client)  # type: ignore[arg-type]
     forwarder.captured = True
 
-    forwarder._on_key_press(event(keysym="Control_L", char=""))
-    forwarder._on_key_press(event(keysym="c", char="\x03"))
-    forwarder._on_key_release(event(keysym="c", char="\x03"))
-    forwarder._on_key_release(event(keysym="Control_L", char=""))
+    forwarder._on_global_key_press(Key.ctrl_l)
+    forwarder._on_global_key_press(KeyCode.from_char("c"))
+    forwarder._on_global_key_release(KeyCode.from_char("c"))
+    forwarder._on_global_key_release(Key.ctrl_l)
 
     assert [(frame.event_type, frame.action, frame.code) for frame in client.frames] == [
         (TYPE_KEY, ACTION_PRESS, 29),
@@ -47,3 +49,15 @@ def test_ctrl_shortcut_flushes_modifier_in_window_mode() -> None:
         (TYPE_KEY, ACTION_RELEASE, 46),
         (TYPE_KEY, ACTION_RELEASE, 29),
     ]
+
+
+def test_ctrl_alt_requests_window_capture_release_without_forwarding_modifiers() -> None:
+    client = FakeClient()
+    forwarder = WindowForwarder(client)  # type: ignore[arg-type]
+    forwarder.captured = True
+
+    forwarder._on_global_key_press(Key.ctrl_l)
+    forwarder._on_global_key_press(Key.alt_l)
+
+    assert forwarder._release_requested.is_set()
+    assert client.frames == []

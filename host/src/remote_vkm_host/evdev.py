@@ -131,10 +131,79 @@ MOUSE_BUTTON_CODES: dict[Button, int] = {
     Button.middle: 0x112,
 }
 
+WINDOWS_VK_TO_EVDEV: dict[int, int] = {
+    0x30: 11,
+    0x31: 2,
+    0x32: 3,
+    0x33: 4,
+    0x34: 5,
+    0x35: 6,
+    0x36: 7,
+    0x37: 8,
+    0x38: 9,
+    0x39: 10,
+    0x41: 30,
+    0x42: 48,
+    0x43: 46,
+    0x44: 32,
+    0x45: 18,
+    0x46: 33,
+    0x47: 34,
+    0x48: 35,
+    0x49: 23,
+    0x4A: 36,
+    0x4B: 37,
+    0x4C: 38,
+    0x4D: 50,
+    0x4E: 49,
+    0x4F: 24,
+    0x50: 25,
+    0x51: 16,
+    0x52: 19,
+    0x53: 31,
+    0x54: 20,
+    0x55: 22,
+    0x56: 47,
+    0x57: 17,
+    0x58: 45,
+    0x59: 21,
+    0x5A: 44,
+    0x60: 82,
+    0x61: 79,
+    0x62: 80,
+    0x63: 81,
+    0x64: 75,
+    0x65: 76,
+    0x66: 77,
+    0x67: 71,
+    0x68: 72,
+    0x69: 73,
+    0x6A: 55,
+    0x6B: 78,
+    0x6D: 74,
+    0x6E: 83,
+    0x6F: 98,
+    0xBA: 39,
+    0xBB: 13,
+    0xBC: 51,
+    0xBD: 12,
+    0xBE: 52,
+    0xBF: 53,
+    0xC0: 41,
+    0xDB: 26,
+    0xDC: 43,
+    0xDD: 27,
+    0xDE: 40,
+}
+
 
 def key_to_evdev_code(key: Key | object) -> int | None:
     if key in KEY_CODES_BY_SPECIAL:
         return KEY_CODES_BY_SPECIAL[key]  # type: ignore[index]
+
+    vk = getattr(key, "vk", None)
+    if isinstance(vk, int) and vk in WINDOWS_VK_TO_EVDEV:
+        return WINDOWS_VK_TO_EVDEV[vk]
 
     char = getattr(key, "char", None)
     if not char:

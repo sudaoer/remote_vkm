@@ -3,17 +3,17 @@ from __future__ import annotations
 import ctypes
 import logging
 import sys
+import threading
 import tkinter as tk
 from dataclasses import replace
 
+from pynput import keyboard as pynput_keyboard
+from pynput.keyboard import Key
+
 from .client import RemoteVkmClient
+from .evdev import key_to_evdev_code
 from .protocol import ACTION_NONE, ACTION_PRESS, ACTION_RELEASE, Frame, TYPE_BUTTON, TYPE_KEY, TYPE_REL, TYPE_WHEEL
-from .tk_evdev import (
-    is_deferred_modifier,
-    mouse_button_to_evdev_code,
-    normalize_hotkey_key,
-    tk_key_to_evdev_code,
-)
+from .tk_evdev import mouse_button_to_evdev_code
 
 LOG = logging.getLogger(__name__)
 
@@ -26,11 +26,14 @@ class WindowForwarder:
         self.root: tk.Tk | None = None
         self.status: tk.StringVar | None = None
         self.pointer: Win32PointerCapture | None = None
+        self.keyboard_listener: pynput_keyboard.Listener | None = None
         self.captured = False
         self._closed = False
+        self._lock = threading.RLock()
+        self._release_requested = threading.Event()
         self._pressed_hotkeys: set[str] = set()
-        self._pending_modifier_codes: dict[str, int] = {}
-        self._remote_key_codes: dict[str, int] = {}
+        self._pending_modifier_codes: dict[object, int] = {}
+        self._remote_key_codes: dict[object, int] = {}
         self._remote_button_codes: dict[int, int] = {}
         self._suppressed_button_releases: set[int] = set()
 
@@ -64,12 +67,14 @@ class WindowForwarder:
         root.bind("<MouseWheel>", self._on_mouse_wheel)
         root.bind("<Button-4>", self._on_x11_wheel)
         root.bind("<Button-5>", self._on_x11_wheel)
-        root.bind("<KeyPress>", self._on_key_press)
-        root.bind("<KeyRelease>", self._on_key_release)
         root.bind("<FocusOut>", self._on_focus_out)
+        root.after(20, self._poll_cross_thread_requests)
 
         LOG.info("open window; click inside it to capture keyboard and mouse")
-        root.mainloop()
+        try:
+            root.mainloop()
+        finally:
+            self._stop_keyboard_capture()
 
     def _send(self, frame: Frame) -> None:
         sequence = self.client.next_sequence()
@@ -78,14 +83,18 @@ class WindowForwarder:
     def _enter_capture(self) -> None:
         if self.captured or self.root is None or self.pointer is None:
             return
-        self._pressed_hotkeys.clear()
-        self._pending_modifier_codes.clear()
+        with self._lock:
+            self._pressed_hotkeys.clear()
+            self._pending_modifier_codes.clear()
         self.root.focus_force()
         self.root.configure(cursor="none")
         try:
             self.pointer.capture()
             self.pointer.center_cursor()
+            self._start_keyboard_capture()
         except Exception:
+            self._stop_keyboard_capture()
+            self.pointer.release()
             self.root.configure(cursor="")
             raise
         self.captured = True
@@ -95,8 +104,10 @@ class WindowForwarder:
     def _release_capture(self) -> None:
         if not self.captured:
             return
-        self._release_all_remote_inputs()
-        self._pressed_hotkeys.clear()
+        with self._lock:
+            self._release_all_remote_inputs()
+            self._pressed_hotkeys.clear()
+        self._stop_keyboard_capture()
         self.captured = False
         if self.root is not None:
             self.root.configure(cursor="")
@@ -104,6 +115,25 @@ class WindowForwarder:
             self.pointer.release()
         self._set_status(self._idle_text())
         LOG.info("input released")
+
+    def _release_capture_threadsafe(self) -> None:
+        self._release_requested.set()
+
+    def _start_keyboard_capture(self) -> None:
+        if self.keyboard_listener is not None:
+            return
+        self.keyboard_listener = pynput_keyboard.Listener(
+            on_press=self._on_global_key_press,
+            on_release=self._on_global_key_release,
+            suppress=True,
+        )
+        self.keyboard_listener.start()
+
+    def _stop_keyboard_capture(self) -> None:
+        if self.keyboard_listener is None:
+            return
+        self.keyboard_listener.stop()
+        self.keyboard_listener = None
 
     def _release_all_remote_inputs(self) -> None:
         for code in list(self._remote_key_codes.values()):
@@ -115,9 +145,9 @@ class WindowForwarder:
         self._pending_modifier_codes.clear()
 
     def _flush_pending_modifiers(self) -> None:
-        for keysym, code in list(self._pending_modifier_codes.items()):
+        for key, code in list(self._pending_modifier_codes.items()):
             self._send(Frame(event_type=TYPE_KEY, action=ACTION_PRESS, code=code))
-            self._remote_key_codes[keysym] = code
+            self._remote_key_codes[key] = code
         self._pending_modifier_codes.clear()
 
     def _on_button_press(self, event: tk.Event) -> str:
@@ -128,9 +158,10 @@ class WindowForwarder:
         code = mouse_button_to_evdev_code(int(event.num))
         if code is None:
             return "break"
-        self._flush_pending_modifiers()
-        self._send(Frame(event_type=TYPE_BUTTON, action=ACTION_PRESS, code=code))
-        self._remote_button_codes[int(event.num)] = code
+        with self._lock:
+            self._flush_pending_modifiers()
+            self._send(Frame(event_type=TYPE_BUTTON, action=ACTION_PRESS, code=code))
+            self._remote_button_codes[int(event.num)] = code
         return "break"
 
     def _on_button_release(self, event: tk.Event) -> str:
@@ -140,11 +171,12 @@ class WindowForwarder:
             return "break"
         if not self.captured:
             return "break"
-        code = self._remote_button_codes.pop(button, None)
-        if code is None:
-            code = mouse_button_to_evdev_code(button)
-        if code is not None:
-            self._send(Frame(event_type=TYPE_BUTTON, action=ACTION_RELEASE, code=code))
+        with self._lock:
+            code = self._remote_button_codes.pop(button, None)
+            if code is None:
+                code = mouse_button_to_evdev_code(button)
+            if code is not None:
+                self._send(Frame(event_type=TYPE_BUTTON, action=ACTION_RELEASE, code=code))
         return "break"
 
     def _on_motion(self, event: tk.Event) -> str:
@@ -154,8 +186,9 @@ class WindowForwarder:
         dx = int(event.x_root) - center_x
         dy = int(event.y_root) - center_y
         if dx or dy:
-            self._flush_pending_modifiers()
-            self._send(Frame(event_type=TYPE_REL, action=ACTION_NONE, value1=dx, value2=dy))
+            with self._lock:
+                self._flush_pending_modifiers()
+                self._send(Frame(event_type=TYPE_REL, action=ACTION_NONE, value1=dx, value2=dy))
             self.pointer.center_cursor()
         return "break"
 
@@ -165,69 +198,69 @@ class WindowForwarder:
         delta = int(event.delta)
         if delta:
             steps = delta // 120 if abs(delta) >= 120 else (1 if delta > 0 else -1)
-            self._flush_pending_modifiers()
-            self._send(Frame(event_type=TYPE_WHEEL, action=ACTION_NONE, value1=steps, value2=0))
+            with self._lock:
+                self._flush_pending_modifiers()
+                self._send(Frame(event_type=TYPE_WHEEL, action=ACTION_NONE, value1=steps, value2=0))
         return "break"
 
     def _on_x11_wheel(self, event: tk.Event) -> str:
         if not self.captured:
             return "break"
         steps = 1 if int(event.num) == 4 else -1
-        self._flush_pending_modifiers()
-        self._send(Frame(event_type=TYPE_WHEEL, action=ACTION_NONE, value1=steps, value2=0))
+        with self._lock:
+            self._flush_pending_modifiers()
+            self._send(Frame(event_type=TYPE_WHEEL, action=ACTION_NONE, value1=steps, value2=0))
         return "break"
 
-    def _on_key_press(self, event: tk.Event) -> str:
+    def _on_global_key_press(self, key: object) -> None:
         if not self.captured:
-            return "break"
+            return
 
-        normalized = normalize_hotkey_key(str(event.keysym))
-        if normalized is not None:
-            self._pressed_hotkeys.add(normalized)
-            if {"Control", "Alt"}.issubset(self._pressed_hotkeys):
-                self._release_capture()
-                return "break"
+        with self._lock:
+            normalized = self._normalize_hotkey_key(key)
+            if normalized is not None:
+                self._pressed_hotkeys.add(normalized)
+                if {"Control", "Alt"}.issubset(self._pressed_hotkeys):
+                    self._release_capture_threadsafe()
+                    return
 
-        key_id = str(event.keysym)
-        if key_id in self._remote_key_codes or key_id in self._pending_modifier_codes:
-            return "break"
+            if key in self._remote_key_codes or key in self._pending_modifier_codes:
+                return
 
-        code = tk_key_to_evdev_code(str(event.keysym), str(event.char))
-        if code is None:
-            LOG.warning("unmapped key press skipped: keysym=%s char=%r", event.keysym, event.char)
-            return "break"
+            code = key_to_evdev_code(key)
+            if code is None:
+                LOG.warning("unmapped key press skipped: %r", key)
+                return
 
-        if is_deferred_modifier(str(event.keysym)):
-            self._pending_modifier_codes[key_id] = code
-            return "break"
+            if self._is_deferred_modifier(key):
+                self._pending_modifier_codes[key] = code
+                return
 
-        self._flush_pending_modifiers()
-        self._send(Frame(event_type=TYPE_KEY, action=ACTION_PRESS, code=code))
-        self._remote_key_codes[key_id] = code
-        return "break"
+            self._flush_pending_modifiers()
+            self._send(Frame(event_type=TYPE_KEY, action=ACTION_PRESS, code=code))
+            self._remote_key_codes[key] = code
 
-    def _on_key_release(self, event: tk.Event) -> str:
-        normalized = normalize_hotkey_key(str(event.keysym))
-        if normalized is not None:
-            self._pressed_hotkeys.discard(normalized)
+    def _on_global_key_release(self, key: object) -> None:
+        with self._lock:
+            normalized = self._normalize_hotkey_key(key)
+            if normalized is not None:
+                self._pressed_hotkeys.discard(normalized)
 
-        if not self.captured:
-            return "break"
+            if not self.captured:
+                return
 
-        key_id = str(event.keysym)
-        pending_code = self._pending_modifier_codes.pop(key_id, None)
-        if pending_code is not None:
-            return "break"
+            pending_code = self._pending_modifier_codes.pop(key, None)
+            if pending_code is not None:
+                return
 
-        code = self._remote_key_codes.pop(key_id, None)
-        if code is None:
-            code = tk_key_to_evdev_code(str(event.keysym), str(event.char))
-        if code is None:
-            LOG.warning("unmapped key release skipped: keysym=%s char=%r", event.keysym, event.char)
-            return "break"
+            code = self._remote_key_codes.pop(key, None)
+            if code is None:
+                code = key_to_evdev_code(key)
+            if code is None:
+                LOG.warning("unmapped key release skipped: %r", key)
+                return
 
-        self._send(Frame(event_type=TYPE_KEY, action=ACTION_RELEASE, code=code))
-        return "break"
+            self._send(Frame(event_type=TYPE_KEY, action=ACTION_RELEASE, code=code))
 
     def _on_focus_out(self, _event: tk.Event) -> None:
         self._release_capture()
@@ -237,6 +270,13 @@ class WindowForwarder:
         self._release_capture()
         if self.root is not None:
             self.root.destroy()
+
+    def _poll_cross_thread_requests(self) -> None:
+        if self._release_requested.is_set():
+            self._release_requested.clear()
+            self._release_capture()
+        if not self._closed and self.root is not None:
+            self.root.after(20, self._poll_cross_thread_requests)
 
     def _set_status(self, value: str) -> None:
         if self.status is not None:
@@ -255,8 +295,21 @@ class WindowForwarder:
         return (
             "Input captured\n\n"
             "Mouse is locked to this window and sent as relative movement.\n"
+            "Keyboard is captured through a low-level hook to avoid IME interference.\n"
             "Press Ctrl+Alt to release capture."
         )
+
+    @staticmethod
+    def _normalize_hotkey_key(key: object) -> str | None:
+        if key in {Key.ctrl_l, Key.ctrl_r}:
+            return "Control"
+        if key in {Key.alt_l, Key.alt_r}:
+            return "Alt"
+        return None
+
+    @staticmethod
+    def _is_deferred_modifier(key: object) -> bool:
+        return key in {Key.ctrl_l, Key.ctrl_r, Key.alt_l, Key.alt_r}
 
 
 class Win32PointerCapture:
