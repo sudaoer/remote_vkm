@@ -1,8 +1,10 @@
 # remote-vkm
 
+[中文版本](README.zh-CN.md)
+
 `remote-vkm` forwards keyboard and mouse events from a Windows host to a Linux development board.
 
-- Host: Python managed by pixi, captures global keyboard/mouse input with `pynput`.
+- Host: Python managed by pixi, opens a VM-style capture window by default.
 - Board: C++17/CMake receiver, injects events through `/dev/uinput`.
 - Transport: plain TCP on port `5533` by default.
 
@@ -52,6 +54,7 @@ Useful flags:
 
 ```powershell
 pixi run host --host <board-ip-or-hostname> --verbose
+pixi run host --host <board-ip-or-hostname> --capture global
 pixi run test
 ```
 
@@ -59,12 +62,15 @@ The host target is required. The project does not assume `k1`, because this mach
 
 ## Safety Controls
 
-While the host client is running:
+The default host mode opens a window:
 
-- `Ctrl+Alt+P` pauses or resumes forwarding.
-- `Ctrl+Alt+Esc` exits the host client.
+- Click inside the window to capture keyboard and mouse.
+- The first click only enters capture mode; it is not forwarded to the board.
+- While captured, the cursor is hidden, locked to the window, recentered after movement, and sent as relative mouse motion.
+- Press `Ctrl+Alt` to release capture, like a virtual machine console.
+- Close the window or stop the console process to exit.
 
-These safety hotkeys are consumed locally. If modifiers or mouse buttons were already sent to the board, the host sends release events before pausing or exiting to avoid stuck remote input.
+The legacy global hook mode is still available with `--capture global`. In that mode, `Ctrl+Alt+P` pauses/resumes forwarding and `Ctrl+Alt+Esc` exits. These safety hotkeys are consumed locally. If modifiers or mouse buttons were already sent to the board, the host sends release events before pausing/releasing/exiting to avoid stuck remote input.
 
 ## Protocol
 
