@@ -1,0 +1,9 @@
+.pixi/
+.deploy_known_hosts
+.pytest_cache/
+__pycache__/
+*.py[cod]
+board/build/
+build/
+dist/
+*.egg-info/

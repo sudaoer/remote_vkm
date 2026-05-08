@@ -1,0 +1,16 @@
+[workspace]
+channels = ["conda-forge"]
+platforms = ["win-64"]
+
+[dependencies]
+python = ">=3.11,<3.13"
+pip = "*"
+pytest = ">=8.0"
+
+[pypi-dependencies]
+pynput = ">=1.7.6"
+remote-vkm-host = { path = ".", editable = true }
+
+[tasks]
+host = "python -m remote_vkm_host"
+test = "pytest -p no:cacheprovider host/tests"

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "remote-vkm-host"
+version = "0.1.0"
+description = "Windows host-side keyboard and mouse forwarding client for remote-vkm."
+requires-python = ">=3.11"
+dependencies = ["pynput>=1.7.6"]
+
+[project.scripts]
+remote-vkm-host = "remote_vkm_host.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "host/src"}
+
+[tool.setuptools.packages.find]
+where = ["host/src"]
