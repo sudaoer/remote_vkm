@@ -5,7 +5,7 @@
 `remote-vkm` 用于将 Windows 主机上的键盘和鼠标事件转发到 Linux 开发板。
 
 - 主机端：由 pixi 管理的 Python 环境，默认打开一个类似虚拟机控制台的捕获窗口。
-- 开发板端：基于 C++17/CMake 的接收端，通过 `/dev/uinput` 注入输入事件。
+- 开发板端：基于 C++17 的接收端，通过 `/dev/uinput` 注入输入事件。
 - 传输层：默认使用 `5533` 端口上的纯 TCP。
 
 这个项目面向可信的本地网络环境，不包含认证或加密机制。
@@ -21,23 +21,22 @@ pyproject.toml        Python 包元数据
 
 ## 构建开发板接收端
 
-在开发板上复制或克隆此仓库后，执行：
+在开发板上复制或克隆此仓库后，直接使用 `c++` 编译：
 
 ```sh
-cmake -S board -B board/build
-cmake --build board/build
+c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -o board/remote-vkm-receiver board/src/main.cpp
 ```
 
 如果只想做一个不注入输入事件的网络连通性冒烟测试，可以运行：
 
 ```sh
-board/build/remote-vkm-receiver --listen 0.0.0.0 --port 5533 --dry-run
+board/remote-vkm-receiver --listen 0.0.0.0 --port 5533 --dry-run
 ```
 
 如果需要真实注入键盘和鼠标事件，可以运行：
 
 ```sh
-sudo board/build/remote-vkm-receiver --listen 0.0.0.0 --port 5533
+sudo board/remote-vkm-receiver --listen 0.0.0.0 --port 5533
 ```
 
 非 dry-run 模式需要 `/dev/uinput`。如果打开 `/dev/uinput` 失败，先使用 `sudo` 运行；如果要长期使用，建议添加一条 udev 规则，为目标用户授予 `uinput` 访问权限。
@@ -50,10 +49,24 @@ sudo board/build/remote-vkm-receiver --listen 0.0.0.0 --port 5533
 pixi run host --host <开发板-IP-或主机名> --port 5533
 ```
 
-如果接收端已经部署到 `sudoer@bpi-f3`，可以用一个脚本同时启动开发板监听服务和本地主机捕获端：
+用脚本上传、构建并启动开发板接收端，然后打开本地主机捕获端：
 
 ```powershell
 .\scripts\start-remote-vkm.ps1
+```
+
+脚本使用非交互 SSH，并设置 `StrictHostKeyChecking=accept-new`：新开发板主机密钥会自动接受，但已变化的主机密钥仍会失败。
+
+指定开发板主机名：
+
+```powershell
+.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3
+```
+
+如果 PowerShell 无法解析开发板主机名，可以显式指定 SSH 目标：
+
+```powershell
+.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -SshHost 192.168.1.39
 ```
 
 如果只想启动或检查开发板接收端，不打开本地捕获窗口：
@@ -106,11 +119,12 @@ uint32 reserved
 
 ## 部署说明
 
-如果已经可以通过 SSH 连接开发板，一种简单的工作流如下：
+如果已经可以通过 SSH 连接开发板，一种简单的手动工作流如下：
 
 ```powershell
-scp -r board <开发板-IP-或主机名>:/tmp/remote-vkm-board
-ssh <开发板-IP-或主机名> "cmake -S /tmp/remote-vkm-board -B /tmp/remote-vkm-board/build && cmake --build /tmp/remote-vkm-board/build"
+ssh <开发板-IP-或主机名> "mkdir -p /tmp/remote-vkm-board/src"
+scp board/src/main.cpp <开发板-IP-或主机名>:/tmp/remote-vkm-board/src/main.cpp
+ssh <开发板-IP-或主机名> "c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -o /tmp/remote-vkm-board/remote-vkm-receiver /tmp/remote-vkm-board/src/main.cpp"
 ```
 
 之后在开发板上启动接收端，再在本机运行主机端客户端即可。

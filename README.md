@@ -5,7 +5,7 @@
 `remote-vkm` forwards keyboard and mouse events from a Windows host to a Linux development board.
 
 - Host: Python managed by pixi, opens a VM-style capture window by default.
-- Board: C++17/CMake receiver, injects events through `/dev/uinput`.
+- Board: C++17 receiver, injects events through `/dev/uinput`.
 - Transport: plain TCP on port `5533` by default.
 
 This is intended for a trusted local network. It does not implement authentication or encryption.
@@ -21,23 +21,22 @@ pyproject.toml        Python package metadata
 
 ## Build The Board Receiver
 
-Copy or clone this repository on the development board, then build:
+Copy or clone this repository on the development board, then build directly with `c++`:
 
 ```sh
-cmake -S board -B board/build
-cmake --build board/build
+c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -o board/remote-vkm-receiver board/src/main.cpp
 ```
 
 For a network-only smoke test that does not inject input:
 
 ```sh
-board/build/remote-vkm-receiver --listen 0.0.0.0 --port 5533 --dry-run
+board/remote-vkm-receiver --listen 0.0.0.0 --port 5533 --dry-run
 ```
 
 For real keyboard and mouse injection:
 
 ```sh
-sudo board/build/remote-vkm-receiver --listen 0.0.0.0 --port 5533
+sudo board/remote-vkm-receiver --listen 0.0.0.0 --port 5533
 ```
 
 The non-dry-run mode requires `/dev/uinput`. If opening `/dev/uinput` fails, run with `sudo` first; for long-term use, add a udev rule that grants the intended user access to `uinput`.
@@ -50,10 +49,24 @@ Install the host environment and run the client from this repository on Windows:
 pixi run host --host <board-ip-or-hostname> --port 5533
 ```
 
-If the receiver has already been deployed to `sudoer@bpi-f3`, start both sides with:
+To upload, build, and start the receiver on the board, then open the local capture client:
 
 ```powershell
 .\scripts\start-remote-vkm.ps1
+```
+
+The script uses non-interactive SSH with `StrictHostKeyChecking=accept-new`: new board keys are accepted automatically, but changed host keys still fail.
+
+For a specific board:
+
+```powershell
+.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3
+```
+
+If the board hostname does not resolve from PowerShell, provide the SSH target explicitly:
+
+```powershell
+.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -SshHost 192.168.1.39
 ```
 
 To start or check only the board receiver without opening the local capture window:
@@ -106,11 +119,12 @@ The host sends one hello frame immediately after connecting. The receiver valida
 
 ## Deployment Notes
 
-If SSH to the board works, one simple workflow is:
+If SSH to the board works, one simple manual workflow is:
 
 ```powershell
-scp -r board <board-ip-or-hostname>:/tmp/remote-vkm-board
-ssh <board-ip-or-hostname> "cmake -S /tmp/remote-vkm-board -B /tmp/remote-vkm-board/build && cmake --build /tmp/remote-vkm-board/build"
+ssh <board-ip-or-hostname> "mkdir -p /tmp/remote-vkm-board/src"
+scp board/src/main.cpp <board-ip-or-hostname>:/tmp/remote-vkm-board/src/main.cpp
+ssh <board-ip-or-hostname> "c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -o /tmp/remote-vkm-board/remote-vkm-receiver /tmp/remote-vkm-board/src/main.cpp"
 ```
 
 Then start the receiver on the board and run the host client locally.

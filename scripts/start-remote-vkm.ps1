@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Starts the remote-vkm receiver on bpi-f3 and then opens the local host capture client.
+Uploads and builds the remote-vkm receiver on the board, starts it, then opens the local host capture client.
 
 .EXAMPLE
 .\scripts\start-remote-vkm.ps1
@@ -12,20 +12,28 @@ Starts the remote-vkm receiver on bpi-f3 and then opens the local host capture c
 .\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -BoardUser sudoer -Port 5533
 
 .EXAMPLE
+.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -SshHost 192.168.1.39
+
+.EXAMPLE
 .\scripts\start-remote-vkm.ps1 -ReceiverOnly
 #>
 
 [CmdletBinding()]
 param(
-    [string]$BoardHost = "bpi-f3",
+    [string]$BoardHost = "k3-pico-itx",
+    [string]$SshHost = "",
     [string]$BoardUser = "sudoer",
     [int]$Port = 5533,
     [string]$Listen = "0.0.0.0",
-    [string]$Receiver = "/home/sudoer/remote_vkm/board/build/remote-vkm-receiver",
+    [string]$RemoteRoot = "/home/sudoer/remote_vkm",
+    [string]$RemoteSource = "/home/sudoer/remote_vkm/board/src/main.cpp",
+    [string]$Receiver = "/home/sudoer/remote_vkm/board/remote-vkm-receiver",
     [string]$RemoteLog = "/home/sudoer/remote_vkm/receiver.log",
+    [string]$LocalSource = "board/src/main.cpp",
     [string]$ClientHost = "",
     [ValidateSet("window", "global")]
     [string]$Capture = "window",
+    [int]$SshConnectTimeout = 8,
     [switch]$VerboseHost,
     [switch]$DryRunBoard,
     [switch]$ReceiverOnly
@@ -50,17 +58,25 @@ function Quote-Sh {
 function Resolve-IPv4OrFallback {
     param([string]$Name)
 
-    try {
-        $record = Resolve-DnsName -Name $Name -Type A -ErrorAction Stop |
-            Where-Object { $_.IPAddress } |
-            Select-Object -First 1
-        if ($record -and $record.IPAddress) {
-            return $record.IPAddress
-        }
-    } catch {
-        Write-Verbose "IPv4 DNS lookup for '$Name' failed: $($_.Exception.Message)"
+    $names = @($Name)
+    if (-not $Name.EndsWith(".local", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $names += "$Name.local"
     }
 
+    foreach ($candidate in $names) {
+        try {
+            $record = Resolve-DnsName -Name $candidate -Type A -ErrorAction Stop |
+                Where-Object { $_.IPAddress } |
+                Select-Object -First 1
+            if ($record -and $record.IPAddress) {
+                return $record.IPAddress
+            }
+        } catch {
+            Write-Verbose "IPv4 DNS lookup for '$candidate' failed: $($_.Exception.Message)"
+        }
+    }
+
+    Write-Warning "Could not resolve an IPv4 address for '$Name'; falling back to the original host string."
     return $Name
 }
 
@@ -68,20 +84,70 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
 
 Require-Command ssh
+Require-Command scp
 Require-Command pixi
 
-$remote = "$BoardUser@$BoardHost"
+$localSourcePath = (Resolve-Path $LocalSource).Path
+$resolvedBoardHost = if ([string]::IsNullOrWhiteSpace($SshHost)) { Resolve-IPv4OrFallback $BoardHost } else { $SshHost }
+$remote = "$BoardUser@$resolvedBoardHost"
+$remoteRootQ = Quote-Sh $RemoteRoot
+$remoteSourceQ = Quote-Sh $RemoteSource
 $receiverQ = Quote-Sh $Receiver
 $logQ = Quote-Sh $RemoteLog
 $listenQ = Quote-Sh $Listen
 $dryRunArg = if ($DryRunBoard) { " --dry-run" } else { "" }
+$sshOptions = @(
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=$SshConnectTimeout",
+    "-o", "StrictHostKeyChecking=accept-new"
+)
+
+$prepareCommand = @"
+set -eu
+mkdir -p $remoteRootQ
+mkdir -p "`$(dirname $remoteSourceQ)"
+mkdir -p "`$(dirname $receiverQ)"
+"@
+
+if ($resolvedBoardHost -ne $BoardHost) {
+    Write-Host "Resolved $BoardHost to $resolvedBoardHost"
+}
+
+Write-Host "Preparing remote build directory on $remote ..."
+& ssh @sshOptions $remote $prepareCommand
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to prepare remote build directory on $remote."
+}
+
+Write-Host "Uploading board source to ${remote}:${RemoteSource} ..."
+& scp @sshOptions "$localSourcePath" "${remote}:${RemoteSource}"
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to upload board source to $remote."
+}
 
 $remoteCommand = @"
 set -eu
+source_file=$remoteSourceQ
 receiver=$receiverQ
 log_file=$logQ
 listen_addr=$listenQ
 port=$Port
+
+if ! command -v c++ >/dev/null 2>&1; then
+    echo "required compiler 'c++' was not found on target host" >&2
+    exit 2
+fi
+
+if [ ! -f "`$source_file" ]; then
+    echo "source file not found: `$source_file" >&2
+    exit 2
+fi
+
+echo "building remote-vkm receiver with c++"
+tmp_receiver="`$receiver.new"
+c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -o "`$tmp_receiver" "`$source_file"
+chmod +x "`$tmp_receiver"
+mv -f "`$tmp_receiver" "`$receiver"
 
 if [ ! -x "`$receiver" ]; then
     echo "receiver not found or not executable: `$receiver" >&2
@@ -105,7 +171,7 @@ fi
 "@
 
 Write-Host "Starting receiver on $remote ..."
-& ssh $remote $remoteCommand
+& ssh @sshOptions $remote $remoteCommand
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to start remote receiver on $remote."
 }
@@ -116,7 +182,7 @@ if ($ReceiverOnly) {
 }
 
 if ([string]::IsNullOrWhiteSpace($ClientHost)) {
-    $ClientHost = Resolve-IPv4OrFallback $BoardHost
+    $ClientHost = $resolvedBoardHost
 }
 
 Write-Host "Starting local capture client -> ${ClientHost}:${Port} ..."
