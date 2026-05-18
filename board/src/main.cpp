@@ -16,6 +16,7 @@
 
 #include <array>
 #include <chrono>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -229,9 +230,26 @@ public:
         }
     }
 
+    void release_all() {
+        if (pressed_codes_.empty()) {
+            return;
+        }
+
+        for (const uint16_t code : pressed_codes_) {
+            if (dry_run_) {
+                printf("release code=%u value=0\n", code);
+            } else {
+                emit(EV_KEY, code, 0);
+            }
+        }
+        pressed_codes_.clear();
+        sync();
+    }
+
 private:
     bool dry_run_ = false;
     int fd_ = -1;
+    std::set<uint16_t> pressed_codes_;
 
     void ioctl_checked(unsigned long request, int value) {
         if (ioctl(fd_, request, value) < 0) {
@@ -266,30 +284,30 @@ private:
     }
 
     void key(uint32_t code, uint8_t action) {
-        const int value = action_value(action);
-        if (value < 0 || code > KEY_MAX) {
-            fprintf(stderr, "invalid key event: code=%u action=%u\n", code, action);
-            return;
-        }
-        if (dry_run_) {
-            printf("key code=%u value=%d\n", code, value);
-            return;
-        }
-        emit(EV_KEY, static_cast<uint16_t>(code), value);
-        sync();
+        key_like("key", code, action);
     }
 
     void button(uint32_t code, uint8_t action) {
+        key_like("button", code, action);
+    }
+
+    void key_like(const char* label, uint32_t code, uint8_t action) {
         const int value = action_value(action);
         if (value < 0 || code > KEY_MAX) {
-            fprintf(stderr, "invalid button event: code=%u action=%u\n", code, action);
+            fprintf(stderr, "invalid %s event: code=%u action=%u\n", label, code, action);
             return;
+        }
+        const uint16_t ev_code = static_cast<uint16_t>(code);
+        if (action == kActionPress) {
+            pressed_codes_.insert(ev_code);
+        } else if (action == kActionRelease) {
+            pressed_codes_.erase(ev_code);
         }
         if (dry_run_) {
-            printf("button code=%u value=%d\n", code, value);
+            printf("%s code=%u value=%d\n", label, code, value);
             return;
         }
-        emit(EV_KEY, static_cast<uint16_t>(code), value);
+        emit(EV_KEY, ev_code, value);
         sync();
     }
 
@@ -365,14 +383,17 @@ void handle_client(int client_fd, UinputDevice& device) {
     std::string error;
 
     if (!read_exact(client_fd, bytes.data(), bytes.size())) {
+        device.release_all();
         return;
     }
     if (!parse_frame(bytes, frame, error)) {
         fprintf(stderr, "protocol error: %s\n", error.c_str());
+        device.release_all();
         return;
     }
     if (frame.type != kTypeHello) {
         fprintf(stderr, "protocol error: expected hello frame, got type %u\n", frame.type);
+        device.release_all();
         return;
     }
     puts("client connected");
@@ -390,6 +411,7 @@ void handle_client(int client_fd, UinputDevice& device) {
         }
         device.dispatch(frame);
     }
+    device.release_all();
 }
 
 } // namespace
@@ -428,6 +450,7 @@ int main(int argc, char** argv) {
             close(client);
             puts("client disconnected");
         }
+        device.release_all();
         close(listener);
     } catch (const std::exception& exc) {
         fprintf(stderr, "error: %s\n", exc.what());

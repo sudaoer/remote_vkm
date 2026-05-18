@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from pynput.keyboard import Key, KeyCode
+import pytest
 
 from remote_vkm_host.protocol import ACTION_PRESS, ACTION_RELEASE, TYPE_KEY
 from remote_vkm_host.window_capture import WindowForwarder
@@ -17,6 +18,11 @@ class FakeClient:
 
     def send(self, frame) -> None:
         self.frames.append(frame)
+
+
+class FailingClient(FakeClient):
+    def send(self, frame) -> None:
+        raise ConnectionError("connection gone")
 
 
 def event(**kwargs):
@@ -61,3 +67,14 @@ def test_ctrl_alt_requests_window_capture_release_without_forwarding_modifiers()
 
     assert forwarder._release_requested.is_set()
     assert client.frames == []
+
+
+def test_connection_failure_requests_window_close() -> None:
+    client = FailingClient()
+    forwarder = WindowForwarder(client)  # type: ignore[arg-type]
+    forwarder.captured = True
+
+    with pytest.raises(ConnectionError, match="connection gone"):
+        forwarder._on_global_key_press(KeyCode.from_char("a"))
+
+    assert forwarder._fatal_requested.is_set()

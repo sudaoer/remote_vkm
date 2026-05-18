@@ -1,4 +1,5 @@
 from pynput.keyboard import Key, KeyCode
+import pytest
 
 from remote_vkm_host.capture import InputForwarder
 from remote_vkm_host.protocol import ACTION_PRESS, ACTION_RELEASE, TYPE_KEY
@@ -15,6 +16,11 @@ class FakeClient:
 
     def send(self, frame) -> None:
         self.frames.append(frame)
+
+
+class FailingClient(FakeClient):
+    def send(self, frame) -> None:
+        raise ConnectionError("connection gone")
 
 
 def test_ctrl_alt_p_is_consumed_and_does_not_leave_remote_modifiers_pressed() -> None:
@@ -69,3 +75,13 @@ def test_unpause_hotkey_releases_are_consumed() -> None:
 
     assert not forwarder.paused
     assert client.frames == []
+
+
+def test_connection_failure_stops_global_forwarder() -> None:
+    client = FailingClient()
+    forwarder = InputForwarder(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ConnectionError, match="connection gone"):
+        forwarder._on_mouse_scroll(0, 0, 0, 1)
+
+    assert forwarder.stopped

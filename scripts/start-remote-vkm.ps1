@@ -34,6 +34,8 @@ param(
     [ValidateSet("window", "global")]
     [string]$Capture = "window",
     [int]$SshConnectTimeout = 8,
+    [int]$ReconnectAttempts = 5,
+    [double]$ReconnectDelay = 1.0,
     [switch]$VerboseHost,
     [switch]$DryRunBoard,
     [switch]$ReceiverOnly
@@ -80,15 +82,94 @@ function Resolve-IPv4OrFallback {
     return $Name
 }
 
+function Test-ReceiverPort {
+    param(
+        [string]$HostName,
+        [int]$Port
+    )
+
+    if (Get-Command Test-NetConnection -ErrorAction SilentlyContinue) {
+        try {
+            return [bool](Test-NetConnection -ComputerName $HostName -Port $Port -InformationLevel Quiet -WarningAction SilentlyContinue)
+        } catch {
+            Write-Verbose "TCP probe for ${HostName}:${Port} failed: $($_.Exception.Message)"
+            return $false
+        }
+    }
+
+    Write-Verbose "Test-NetConnection was not found; using TcpClient fallback."
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $task = $client.ConnectAsync($HostName, $Port)
+        if (-not $task.Wait(1000)) {
+            return $false
+        }
+        return $client.Connected
+    } catch {
+        Write-Verbose "TCP probe for ${HostName}:${Port} failed: $($_.Exception.Message)"
+        return $false
+    } finally {
+        $client.Dispose()
+    }
+}
+
+function Invoke-HostClient {
+    param([string]$HostName)
+
+    Require-Command pixi
+
+    Write-Host "Starting local capture client -> ${HostName}:${Port} ..."
+    $reconnectDelayText = $ReconnectDelay.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    $hostArgs = @(
+        "run", "host",
+        "--host", $HostName,
+        "--port", "$Port",
+        "--capture", $Capture,
+        "--reconnect-attempts", "$ReconnectAttempts",
+        "--reconnect-delay", $reconnectDelayText
+    )
+    if ($VerboseHost) {
+        $hostArgs += "--verbose"
+    }
+
+    & pixi @hostArgs
+    exit $LASTEXITCODE
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
 
+if ($ReconnectAttempts -lt 0) {
+    throw "ReconnectAttempts must be greater than or equal to 0."
+}
+if ($ReconnectDelay -lt 0) {
+    throw "ReconnectDelay must be greater than or equal to 0."
+}
+
+$resolvedBoardHost = ""
+if ([string]::IsNullOrWhiteSpace($ClientHost)) {
+    $resolvedBoardHost = if ([string]::IsNullOrWhiteSpace($SshHost)) { Resolve-IPv4OrFallback $BoardHost } else { $SshHost }
+    $ClientHost = $resolvedBoardHost
+}
+
+Write-Host "Probing receiver TCP port ${ClientHost}:${Port} ..."
+if (Test-ReceiverPort -HostName $ClientHost -Port $Port) {
+    Write-Host "Receiver already listening on ${ClientHost}:${Port}; skipping remote build/start."
+    if ($ReceiverOnly) {
+        Write-Host "Receiver is ready. Skipping local capture because -ReceiverOnly was set."
+        exit 0
+    }
+    Invoke-HostClient -HostName $ClientHost
+}
+
+if ([string]::IsNullOrWhiteSpace($resolvedBoardHost)) {
+    $resolvedBoardHost = if ([string]::IsNullOrWhiteSpace($SshHost)) { Resolve-IPv4OrFallback $BoardHost } else { $SshHost }
+}
+
 Require-Command ssh
 Require-Command scp
-Require-Command pixi
 
 $localSourcePath = (Resolve-Path $LocalSource).Path
-$resolvedBoardHost = if ([string]::IsNullOrWhiteSpace($SshHost)) { Resolve-IPv4OrFallback $BoardHost } else { $SshHost }
 $remote = "$BoardUser@$resolvedBoardHost"
 $remoteRootQ = Quote-Sh $RemoteRoot
 $remoteSourceQ = Quote-Sh $RemoteSource
@@ -181,15 +262,4 @@ if ($ReceiverOnly) {
     exit 0
 }
 
-if ([string]::IsNullOrWhiteSpace($ClientHost)) {
-    $ClientHost = $resolvedBoardHost
-}
-
-Write-Host "Starting local capture client -> ${ClientHost}:${Port} ..."
-$hostArgs = @("run", "host", "--host", $ClientHost, "--port", "$Port", "--capture", $Capture)
-if ($VerboseHost) {
-    $hostArgs += "--verbose"
-}
-
-& pixi @hostArgs
-exit $LASTEXITCODE
+Invoke-HostClient -HostName $ClientHost

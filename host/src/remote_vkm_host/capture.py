@@ -25,6 +25,7 @@ class InputForwarder:
         self._remote_key_codes: dict[object, int] = {}
         self._remote_button_codes: dict[mouse.Button, int] = {}
         self._last_pos: tuple[int, int] | None = None
+        self._fatal_error: Exception | None = None
 
     @property
     def stopped(self) -> bool:
@@ -45,21 +46,36 @@ class InputForwarder:
                 self._stop.wait()
                 keyboard_listener.stop()
                 mouse_listener.stop()
+        if self._fatal_error is not None:
+            raise self._fatal_error
 
     def _send(self, frame: Frame, respect_pause: bool = True) -> None:
         if respect_pause and self.paused:
             return
         sequence = self.client.next_sequence()
-        self.client.send(replace(frame, sequence=sequence))
+        try:
+            self.client.send(replace(frame, sequence=sequence))
+        except Exception as exc:
+            self._handle_send_error(exc)
+            raise
+
+    def _handle_send_error(self, exc: Exception) -> None:
+        if self._fatal_error is None:
+            self._fatal_error = exc
+            LOG.error("connection failed; stopping host client: %s", exc)
+        self._stop.set()
 
     def _release_all_remote_inputs(self) -> None:
-        for code in list(self._remote_key_codes.values()):
-            self._send(Frame(event_type=TYPE_KEY, action=ACTION_RELEASE, code=code), respect_pause=False)
-        for code in list(self._remote_button_codes.values()):
-            self._send(Frame(event_type=TYPE_BUTTON, action=ACTION_RELEASE, code=code), respect_pause=False)
-        self._remote_key_codes.clear()
-        self._remote_button_codes.clear()
-        self._pending_modifier_codes.clear()
+        try:
+            if self._fatal_error is None:
+                for code in list(self._remote_key_codes.values()):
+                    self._send(Frame(event_type=TYPE_KEY, action=ACTION_RELEASE, code=code), respect_pause=False)
+                for code in list(self._remote_button_codes.values()):
+                    self._send(Frame(event_type=TYPE_BUTTON, action=ACTION_RELEASE, code=code), respect_pause=False)
+        finally:
+            self._remote_key_codes.clear()
+            self._remote_button_codes.clear()
+            self._pending_modifier_codes.clear()
 
     def _flush_pending_modifiers(self) -> None:
         if self.paused:

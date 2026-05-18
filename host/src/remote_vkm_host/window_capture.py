@@ -31,11 +31,13 @@ class WindowForwarder:
         self._closed = False
         self._lock = threading.RLock()
         self._release_requested = threading.Event()
+        self._fatal_requested = threading.Event()
         self._pressed_hotkeys: set[str] = set()
         self._pending_modifier_codes: dict[object, int] = {}
         self._remote_key_codes: dict[object, int] = {}
         self._remote_button_codes: dict[int, int] = {}
         self._suppressed_button_releases: set[int] = set()
+        self._fatal_error: Exception | None = None
 
     def run(self) -> None:
         root = tk.Tk()
@@ -75,10 +77,22 @@ class WindowForwarder:
             root.mainloop()
         finally:
             self._stop_keyboard_capture()
+        if self._fatal_error is not None:
+            raise self._fatal_error
 
     def _send(self, frame: Frame) -> None:
         sequence = self.client.next_sequence()
-        self.client.send(replace(frame, sequence=sequence))
+        try:
+            self.client.send(replace(frame, sequence=sequence))
+        except Exception as exc:
+            self._handle_send_error(exc)
+            raise
+
+    def _handle_send_error(self, exc: Exception) -> None:
+        if self._fatal_error is None:
+            self._fatal_error = exc
+            LOG.error("connection failed; stopping host client: %s", exc)
+        self._fatal_requested.set()
 
     def _enter_capture(self) -> None:
         if self.captured or self.root is None or self.pointer is None:
@@ -136,13 +150,16 @@ class WindowForwarder:
         self.keyboard_listener = None
 
     def _release_all_remote_inputs(self) -> None:
-        for code in list(self._remote_key_codes.values()):
-            self._send(Frame(event_type=TYPE_KEY, action=ACTION_RELEASE, code=code))
-        for code in list(self._remote_button_codes.values()):
-            self._send(Frame(event_type=TYPE_BUTTON, action=ACTION_RELEASE, code=code))
-        self._remote_key_codes.clear()
-        self._remote_button_codes.clear()
-        self._pending_modifier_codes.clear()
+        try:
+            if self._fatal_error is None:
+                for code in list(self._remote_key_codes.values()):
+                    self._send(Frame(event_type=TYPE_KEY, action=ACTION_RELEASE, code=code))
+                for code in list(self._remote_button_codes.values()):
+                    self._send(Frame(event_type=TYPE_BUTTON, action=ACTION_RELEASE, code=code))
+        finally:
+            self._remote_key_codes.clear()
+            self._remote_button_codes.clear()
+            self._pending_modifier_codes.clear()
 
     def _flush_pending_modifiers(self) -> None:
         for key, code in list(self._pending_modifier_codes.items()):
@@ -272,6 +289,10 @@ class WindowForwarder:
             self.root.destroy()
 
     def _poll_cross_thread_requests(self) -> None:
+        if self._fatal_requested.is_set():
+            self._fatal_requested.clear()
+            self._close()
+            return
         if self._release_requested.is_set():
             self._release_requested.clear()
             self._release_capture()
