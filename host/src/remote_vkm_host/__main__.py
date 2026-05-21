@@ -17,18 +17,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="window",
         help="capture mode: window opens a VM-style grab window; global uses the legacy global hooks",
     )
-    parser.add_argument(
-        "--reconnect-attempts",
-        type=int,
-        default=5,
-        help="number of reconnect attempts after a connection drops",
-    )
-    parser.add_argument(
-        "--reconnect-delay",
-        type=float,
-        default=1.0,
-        help="base reconnect delay in seconds; attempts wait delay, 2*delay, ...",
-    )
     parser.add_argument("--verbose", action="store_true", help="enable debug logging")
     return parser
 
@@ -41,12 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        with RemoteVkmClient(
-            args.host,
-            args.port,
-            reconnect_attempts=args.reconnect_attempts,
-            reconnect_delay=args.reconnect_delay,
-        ) as client:
+        with RemoteVkmClient(args.host, args.port) as client:
             if args.capture == "global":
                 from .capture import InputForwarder
 

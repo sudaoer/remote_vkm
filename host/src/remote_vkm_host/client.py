@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import socket
 import threading
-import time
 from typing import Self
 
 from .protocol import Frame, hello_frame
@@ -17,19 +16,10 @@ class RemoteVkmClient:
         host: str,
         port: int,
         timeout: float = 5.0,
-        reconnect_attempts: int = 5,
-        reconnect_delay: float = 1.0,
     ) -> None:
-        if reconnect_attempts < 0:
-            raise ValueError("reconnect_attempts must be >= 0")
-        if reconnect_delay < 0:
-            raise ValueError("reconnect_delay must be >= 0")
-
         self.host = host
         self.port = port
         self.timeout = timeout
-        self.reconnect_attempts = reconnect_attempts
-        self.reconnect_delay = reconnect_delay
         self._sock: socket.socket | None = None
         self._lock = threading.Lock()
         self._sequence = 0
@@ -79,45 +69,6 @@ class RemoteVkmClient:
             self._sequence += 1
             return self._sequence
 
-    def _reconnect_and_send_locked(self, payload: bytes) -> None:
-        last_exc: OSError | None = None
-        for attempt in range(1, self.reconnect_attempts + 1):
-            delay = self.reconnect_delay * attempt
-            if delay > 0:
-                LOG.info(
-                    "reconnecting to %s:%s in %.1fs (attempt %s/%s)",
-                    self.host,
-                    self.port,
-                    delay,
-                    attempt,
-                    self.reconnect_attempts,
-                )
-                time.sleep(delay)
-            else:
-                LOG.info(
-                    "reconnecting to %s:%s (attempt %s/%s)",
-                    self.host,
-                    self.port,
-                    attempt,
-                    self.reconnect_attempts,
-                )
-
-            sock: socket.socket | None = None
-            try:
-                sock = self._connect_once()
-                sock.sendall(payload)
-            except OSError as exc:
-                last_exc = exc
-                self._close_socket(sock)
-                LOG.warning("reconnect attempt %s/%s failed: %s", attempt, self.reconnect_attempts, exc)
-                continue
-
-            self._sock = sock
-            LOG.info("reconnected")
-            return
-
-        raise ConnectionError(f"failed to reconnect after {self.reconnect_attempts} attempts") from last_exc
-
     def send(self, frame: Frame) -> None:
         payload = frame.pack()
         with self._lock:
@@ -127,8 +78,7 @@ class RemoteVkmClient:
                 self._sock.sendall(payload)
                 return
             except OSError as exc:
-                LOG.warning("send failed; reconnecting: %s", exc)
+                LOG.error("send failed; connection lost: %s", exc)
                 self._close_socket(self._sock)
                 self._sock = None
-
-            self._reconnect_and_send_locked(payload)
+                raise ConnectionError("connection lost") from exc

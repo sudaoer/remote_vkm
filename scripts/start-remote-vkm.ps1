@@ -34,8 +34,6 @@ param(
     [ValidateSet("window", "global")]
     [string]$Capture = "window",
     [int]$SshConnectTimeout = 8,
-    [int]$ReconnectAttempts = 5,
-    [double]$ReconnectDelay = 1.0,
     [switch]$VerboseHost,
     [switch]$DryRunBoard,
     [switch]$ReceiverOnly
@@ -119,14 +117,11 @@ function Invoke-HostClient {
     Require-Command pixi
 
     Write-Host "Starting local capture client -> ${HostName}:${Port} ..."
-    $reconnectDelayText = $ReconnectDelay.ToString([System.Globalization.CultureInfo]::InvariantCulture)
     $hostArgs = @(
         "run", "host",
         "--host", $HostName,
         "--port", "$Port",
-        "--capture", $Capture,
-        "--reconnect-attempts", "$ReconnectAttempts",
-        "--reconnect-delay", $reconnectDelayText
+        "--capture", $Capture
     )
     if ($VerboseHost) {
         $hostArgs += "--verbose"
@@ -138,13 +133,6 @@ function Invoke-HostClient {
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
-
-if ($ReconnectAttempts -lt 0) {
-    throw "ReconnectAttempts must be greater than or equal to 0."
-}
-if ($ReconnectDelay -lt 0) {
-    throw "ReconnectDelay must be greater than or equal to 0."
-}
 
 $resolvedBoardHost = ""
 if ([string]::IsNullOrWhiteSpace($ClientHost)) {
