@@ -20,15 +20,15 @@ Uploads and builds the remote-vkm receiver on the board, starts it, then opens t
 
 [CmdletBinding()]
 param(
-    [string]$BoardHost = "k3-pico-itx",
+    [string]$BoardHost = "k3-picoitx",
     [string]$SshHost = "",
     [string]$BoardUser = "sudoer",
     [int]$Port = 5533,
     [string]$Listen = "0.0.0.0",
-    [string]$RemoteRoot = "/home/sudoer/remote_vkm",
-    [string]$RemoteSource = "/home/sudoer/remote_vkm/board/src/main.cpp",
-    [string]$Receiver = "/home/sudoer/remote_vkm/board/remote-vkm-receiver",
-    [string]$RemoteLog = "/home/sudoer/remote_vkm/receiver.log",
+    [string]$RemoteRoot = "/tmp/remote-vkm-board",
+    [string]$RemoteSource = "/tmp/remote-vkm-board/src/main.cpp",
+    [string]$Receiver = "/tmp/remote-vkm-board/remote-vkm-receiver",
+    [string]$RemoteLog = "/tmp/remote-vkm-board/receiver.log",
     [string]$LocalSource = "board/src/main.cpp",
     [string]$ClientHost = "",
     [ValidateSet("window", "global")]
