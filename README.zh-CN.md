@@ -8,7 +8,7 @@
 - 开发板端：基于 C++17 的接收端，通过 `/dev/uinput` 注入输入事件。
 - 传输层：默认使用 `5533` 端口上的纯 TCP。
 
-这个项目面向可信的本地网络环境，不包含认证或加密机制。
+SSH 部署阶段使用 SSH 的认证与加密；部署完成后的键鼠事件仍通过未认证、未加密的 TCP 连接传输，因此项目只适合可信的本地网络。
 
 ## 仓库结构
 
@@ -55,18 +55,18 @@ pixi run host --host <开发板-IP-或主机名> --port 5533
 .\scripts\start-remote-vkm.ps1
 ```
 
-脚本使用非交互 SSH，并设置 `StrictHostKeyChecking=accept-new`：新开发板主机密钥会自动接受，但已变化的主机密钥仍会失败。
+脚本默认连接 `root@192.168.31.215:22`，并隐藏提示一次 SSH 密码。密码只保留在当前 Python 进程内，不会写入命令行、环境变量、仓库或日志。新开发板主机密钥会保存到 gitignored 的 `.deploy_known_hosts`，已变化的主机密钥仍会导致连接失败。
 
-指定开发板主机名：
+使用 SSH 密钥认证：
 
 ```powershell
-.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3
+.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -BoardUser sudoer -SshAuth key
 ```
 
-如果 PowerShell 无法解析开发板主机名，可以显式指定 SSH 目标：
+如果事件接收地址与 SSH 地址不同，或 SSH 使用非默认端口，可以分别指定：
 
 ```powershell
-.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -SshHost 192.168.1.39
+.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -SshHost 192.168.1.39 -SshPort 2222
 ```
 
 如果只想启动或检查开发板接收端，不打开本地捕获窗口：
@@ -83,7 +83,7 @@ pixi run host --host <开发板-IP-或主机名> --capture global
 pixi run test
 ```
 
-`host` 参数是必填项。项目不会默认使用 `k1`，因为当前这台机器无法解析这个 SSH 别名。
+直接运行 `pixi run host` 时，`host` 参数仍是必填项；部署脚本则使用上述默认开发板地址。
 
 ## 安全控制
 

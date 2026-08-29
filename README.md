@@ -8,7 +8,7 @@
 - Board: C++17 receiver, injects events through `/dev/uinput`.
 - Transport: plain TCP on port `5533` by default.
 
-This is intended for a trusted local network. It does not implement authentication or encryption.
+The SSH deployment stage uses SSH authentication and encryption. After deployment, keyboard and mouse events still use an unauthenticated, unencrypted TCP connection, so the project is intended only for a trusted local network.
 
 ## Repository Layout
 
@@ -55,18 +55,18 @@ To upload, build, and start the receiver on the board, then open the local captu
 .\scripts\start-remote-vkm.ps1
 ```
 
-The script uses non-interactive SSH with `StrictHostKeyChecking=accept-new`: new board keys are accepted automatically, but changed host keys still fail.
+The script connects to `root@192.168.31.215:22` by default and securely prompts once for the SSH password. The password exists only in the current Python process; it is not placed in command-line arguments, environment variables, the repository, or logs. New board host keys are saved in the gitignored `.deploy_known_hosts` file, while changed host keys still fail validation.
 
-For a specific board:
+To use SSH key authentication:
 
 ```powershell
-.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3
+.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -BoardUser sudoer -SshAuth key
 ```
 
-If the board hostname does not resolve from PowerShell, provide the SSH target explicitly:
+If the event receiver address differs from the SSH address, or SSH uses a non-default port, specify them separately:
 
 ```powershell
-.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -SshHost 192.168.1.39
+.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -SshHost 192.168.1.39 -SshPort 2222
 ```
 
 To start or check only the board receiver without opening the local capture window:
@@ -83,7 +83,7 @@ pixi run host --host <board-ip-or-hostname> --capture global
 pixi run test
 ```
 
-The host target is required. The project does not assume `k1`, because this machine currently cannot resolve that SSH alias.
+The `host` argument remains required when invoking `pixi run host` directly; the deployment script uses the default board address described above.
 
 ## Safety Controls
 

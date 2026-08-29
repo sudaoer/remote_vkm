@@ -7,7 +7,7 @@ name = "remote-vkm-host"
 version = "0.1.0"
 description = "Windows host-side keyboard and mouse forwarding client for remote-vkm."
 requires-python = ">=3.11"
-dependencies = ["pynput>=1.7.6"]
+dependencies = ["paramiko>=5,<6", "pynput>=1.7.6"]
 
 [project.scripts]
 remote-vkm-host = "remote_vkm_host.__main__:main"

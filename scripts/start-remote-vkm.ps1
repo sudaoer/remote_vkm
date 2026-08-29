@@ -9,20 +9,23 @@ Uploads and builds the remote-vkm receiver on the board, starts it, then opens t
 .\scripts\start-remote-vkm.ps1 -VerboseHost
 
 .EXAMPLE
-.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -BoardUser sudoer -Port 5533
-
-.EXAMPLE
-.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -SshHost 192.168.1.39
-
-.EXAMPLE
 .\scripts\start-remote-vkm.ps1 -ReceiverOnly
+
+.EXAMPLE
+.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -BoardUser sudoer -SshAuth key
+
+.EXAMPLE
+.\scripts\start-remote-vkm.ps1 -BoardHost bpi-f3 -SshHost 192.168.1.39 -SshPort 22
 #>
 
 [CmdletBinding()]
 param(
-    [string]$BoardHost = "k3-picoitx",
+    [string]$BoardHost = "192.168.31.215",
     [string]$SshHost = "",
-    [string]$BoardUser = "sudoer",
+    [string]$BoardUser = "root",
+    [int]$SshPort = 22,
+    [ValidateSet("password", "key")]
+    [string]$SshAuth = "password",
     [int]$Port = 5533,
     [string]$Listen = "0.0.0.0",
     [string]$RemoteRoot = "/tmp/remote-vkm-board",
@@ -49,14 +52,16 @@ function Require-Command {
     }
 }
 
-function Quote-Sh {
-    param([string]$Value)
-
-    return "'" + $Value.Replace("'", "'`"`"`'") + "'"
-}
-
 function Resolve-IPv4OrFallback {
     param([string]$Name)
+
+    $parsedAddress = $null
+    if (
+        [System.Net.IPAddress]::TryParse($Name, [ref]$parsedAddress) -and
+        $parsedAddress.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork
+    ) {
+        return $Name
+    }
 
     $names = @($Name)
     if (-not $Name.EndsWith(".local", [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -133,6 +138,7 @@ function Invoke-HostClient {
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
+Require-Command pixi
 
 $resolvedBoardHost = ""
 if ([string]::IsNullOrWhiteSpace($ClientHost)) {
@@ -154,95 +160,51 @@ if ([string]::IsNullOrWhiteSpace($resolvedBoardHost)) {
     $resolvedBoardHost = if ([string]::IsNullOrWhiteSpace($SshHost)) { Resolve-IPv4OrFallback $BoardHost } else { $SshHost }
 }
 
-Require-Command ssh
-Require-Command scp
-
 $localSourcePath = (Resolve-Path $LocalSource).Path
 $remote = "$BoardUser@$resolvedBoardHost"
-$remoteRootQ = Quote-Sh $RemoteRoot
-$remoteSourceQ = Quote-Sh $RemoteSource
-$receiverQ = Quote-Sh $Receiver
-$logQ = Quote-Sh $RemoteLog
-$listenQ = Quote-Sh $Listen
-$dryRunArg = if ($DryRunBoard) { " --dry-run" } else { "" }
-$sshOptions = @(
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=$SshConnectTimeout",
-    "-o", "StrictHostKeyChecking=accept-new"
-)
-
-$prepareCommand = @"
-set -eu
-mkdir -p $remoteRootQ
-mkdir -p "`$(dirname $remoteSourceQ)"
-mkdir -p "`$(dirname $receiverQ)"
-"@
+$knownHostsPath = Join-Path $repoRoot ".deploy_known_hosts"
 
 if ($resolvedBoardHost -ne $BoardHost) {
     Write-Host "Resolved $BoardHost to $resolvedBoardHost"
 }
 
-Write-Host "Preparing remote build directory on $remote ..."
-& ssh @sshOptions $remote $prepareCommand
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to prepare remote build directory on $remote."
+Write-Host "Deploying receiver to ${remote}:$SshPort using $SshAuth authentication ..."
+$deployArgs = @(
+    "run", "python", "-m", "remote_vkm_host.deploy",
+    "--host", $resolvedBoardHost,
+    "--user", $BoardUser,
+    "--ssh-port", "$SshPort",
+    "--auth", $SshAuth.ToLowerInvariant(),
+    "--connect-timeout", "$SshConnectTimeout",
+    "--known-hosts", "$knownHostsPath",
+    "--local-source", "$localSourcePath",
+    "--remote-root", $RemoteRoot,
+    "--remote-source", $RemoteSource,
+    "--receiver", $Receiver,
+    "--remote-log", $RemoteLog,
+    "--listen", $Listen,
+    "--receiver-port", "$Port"
+)
+if ($DryRunBoard) {
+    $deployArgs += "--dry-run"
 }
 
-Write-Host "Uploading board source to ${remote}:${RemoteSource} ..."
-& scp @sshOptions "$localSourcePath" "${remote}:${RemoteSource}"
+& pixi @deployArgs
 if ($LASTEXITCODE -ne 0) {
-    throw "Failed to upload board source to $remote."
+    throw "Failed to deploy/start the remote receiver on $remote."
 }
 
-$remoteCommand = @"
-set -eu
-source_file=$remoteSourceQ
-receiver=$receiverQ
-log_file=$logQ
-listen_addr=$listenQ
-port=$Port
-
-if ! command -v c++ >/dev/null 2>&1; then
-    echo "required compiler 'c++' was not found on target host" >&2
-    exit 2
-fi
-
-if [ ! -f "`$source_file" ]; then
-    echo "source file not found: `$source_file" >&2
-    exit 2
-fi
-
-echo "building remote-vkm receiver with c++"
-tmp_receiver="`$receiver.new"
-c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -o "`$tmp_receiver" "`$source_file"
-chmod +x "`$tmp_receiver"
-mv -f "`$tmp_receiver" "`$receiver"
-
-if [ ! -x "`$receiver" ]; then
-    echo "receiver not found or not executable: `$receiver" >&2
-    exit 2
-fi
-
-if ss -ltn "sport = :`$port" | grep -q LISTEN; then
-    echo "remote-vkm receiver already listening on port `$port"
-else
-    mkdir -p "`$(dirname "`$log_file")"
-    nohup sudo -n "`$receiver" --listen "`$listen_addr" --port "`$port"$dryRunArg > "`$log_file" 2>&1 < /dev/null &
-    pid=`$!
-    sleep 0.5
-    if ! kill -0 "`$pid" 2>/dev/null; then
-        echo "remote-vkm receiver failed to start; log follows:" >&2
-        tail -n 80 "`$log_file" >&2 || true
-        exit 1
-    fi
-    echo "started remote-vkm receiver pid=`$pid, log=`$log_file"
-fi
-"@
-
-Write-Host "Starting receiver on $remote ..."
-& ssh @sshOptions $remote $remoteCommand
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to start remote receiver on $remote."
+Write-Host "Waiting for receiver TCP port ${ClientHost}:${Port} ..."
+$receiverReady = $false
+for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    if (Test-ReceiverPort -HostName $ClientHost -Port $Port) {
+        $receiverReady = $true
+        break
+    }
+    Start-Sleep -Milliseconds 250
+}
+if (-not $receiverReady) {
+    throw "Receiver deployment completed, but ${ClientHost}:${Port} did not become reachable."
 }
 
 if ($ReceiverOnly) {
